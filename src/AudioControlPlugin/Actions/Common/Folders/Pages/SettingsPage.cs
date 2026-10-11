@@ -32,6 +32,9 @@ internal class SettingsPage : FolderPage
 
     private readonly int[] fpsValues = { 10, 20, 30 };
 
+    private string _lastToggledAction = string.Empty;
+    private long _lastToggleTimestamp = 0;
+
     public SettingsPage(Folder parent) : base(parent)
     {
     }
@@ -126,6 +129,16 @@ internal class SettingsPage : FolderPage
     {
         if (touchEvent is null || touchEvent.EventType == DeviceTouchEventType.Press)
         {
+            // A tap arrives both as a touch event and as a command; toggling on both turned every
+            // setting on and straight back off.
+            long now = Environment.TickCount64;
+            if (actionParameter == this._lastToggledAction && now - this._lastToggleTimestamp < 500)
+            {
+                return false;
+            }
+            this._lastToggledAction = actionParameter;
+            this._lastToggleTimestamp = now;
+
             if (actionParameter == Command.PluginDataDirectory.ToString())
             {
                 if (IoHelpers.EnsureDirectoryExists(PluginData.Directory))
@@ -166,6 +179,13 @@ internal class SettingsPage : FolderPage
                 foreach (string setting in settings)
                 {
                     base.Folder.Plugin.DeletePluginSetting(setting);
+                }
+                // Without this the cached values kept the cleared settings alive until restart.
+                PluginSettings.ResetCache();
+                AudioControlPlugin.RefreshTimer.Interval = 1000.0 / PluginSettings.FPS;
+                foreach (string otherAction in base.ButtonActionNames)
+                {
+                    base.CommandImageChanged(otherAction);
                 }
             }
             base.CommandImageChanged(actionParameter);

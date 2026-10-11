@@ -128,7 +128,7 @@ public class AudioSessionControl : IAudioControlSession, IDisposable
         if (this.IsSystemSoundsSession)
         {
             this.ProcessId = 0;
-            this._exePath = this.ASII.ExePath;
+            this._exePath = this.ASII?.ExePath;
         }
         else
         {
@@ -145,7 +145,7 @@ public class AudioSessionControl : IAudioControlSession, IDisposable
                 // Use the exe path from the session identifier if available
                 if (string.IsNullOrEmpty(this._exePath))
                 {
-                    this._exePath = this.ASII.ExePath ?? this.ASI.ExePath;
+                    this._exePath = this.ASII?.ExePath ?? this.ASI?.ExePath;
                 }
                 if (string.IsNullOrEmpty(this._displayName) && !string.IsNullOrEmpty(this._exePath))
                 {
@@ -203,13 +203,13 @@ public class AudioSessionControl : IAudioControlSession, IDisposable
     }
 
     string IAudioControl.Id { get => this.SessionIdentifier; }
-    bool IAudioControl.Muted { get => this.SimpleAudioVolume.Mute; set => this.SimpleAudioVolume.Mute = value; }
-    float IAudioControl.VolumeScalar { get => this.SimpleAudioVolume.Volume; set => this.SimpleAudioVolume.Volume = value; }
-    float[] IAudioControl.PeakValues { get => this.AudioMeterInformation.PeakValues.ToArray(); }
+    bool IAudioControl.Muted { get => this.SimpleAudioVolume?.Mute ?? false; set { if (this.SimpleAudioVolume != null) { this.SimpleAudioVolume.Mute = value; } } }
+    float IAudioControl.VolumeScalar { get => this.SimpleAudioVolume?.Volume ?? 0.0f; set { if (this.SimpleAudioVolume != null) { this.SimpleAudioVolume.Volume = value; } } }
+    float[] IAudioControl.PeakValues { get => this.AudioMeterInformation?.PeakValues.ToArray() ?? Array.Empty<float>(); }
     string IAudioControlSession.InstanceId { get => this.SessionInstanceIdentifier; }
-    string IAudioControlSession.DeviceId { get => this.ASI.DeviceId; }
+    string IAudioControlSession.DeviceId { get => this.ASI?.DeviceId; }
     string IAudioControlSession.ExePath { get => this._exePath; }
-    string IAudioControlSession.ExeId { get => this.ASII.ExeId; }
+    string IAudioControlSession.ExeId { get => this.ASII?.ExeId; }
 
     public void Dispose()
     {

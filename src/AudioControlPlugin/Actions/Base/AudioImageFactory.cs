@@ -25,6 +25,7 @@ internal class AudioImageFactory : IActionImageFactory<AudioImageData>
     private readonly Brush orangeBrush;
     private readonly Brush redBrush;
     private readonly StringFormat cFormat;
+    private bool disposed = false;
 
     public AudioImageFactory()
     {
@@ -229,6 +230,8 @@ internal class AudioImageFactory : IActionImageFactory<AudioImageData>
     {
         lock (this.locker)
         {
+            // Throw rather than draw something: the store must not cache an image from a retired factory.
+            ObjectDisposedException.ThrowIf(this.disposed, this);
             if (audioData.NotFound)
             {
                 return PluginImage.DrawTextImage("Not found", false, imageSize);
@@ -256,6 +259,36 @@ internal class AudioImageFactory : IActionImageFactory<AudioImageData>
                 ImageConverter converter = new ImageConverter();
                 return BitmapImage.FromArray(converter.ConvertTo(image, typeof(byte[])) as byte[]);
             }
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (this.locker)
+        {
+            if (this.disposed)
+            {
+                return;
+            }
+            this.disposed = true;
+            foreach (Bitmap icon in this.iconsDictionary.Values)
+            {
+                icon.Dispose();
+            }
+            this.iconsDictionary.Clear();
+            this.graphicsWidth50.Dispose();
+            this.imageWidth50.Dispose();
+            this.graphicsWidth80.Dispose();
+            this.imageWidth80.Dispose();
+            this.crossMuteIcon.Dispose();
+            this.calibri7Font.Dispose();
+            this.calibri10Font.Dispose();
+            this.orangePen.Dispose();
+            this.whiteBrush.Dispose();
+            this.greyBrush.Dispose();
+            this.orangeBrush.Dispose();
+            this.redBrush.Dispose();
+            this.cFormat.Dispose();
         }
     }
 }

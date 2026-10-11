@@ -1,7 +1,6 @@
 ﻿namespace WindowsInterop.CoreAudio;
 
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 using System.Linq;
 
 using WindowsInterop.PropertySystem;
@@ -15,6 +14,13 @@ public class MMAudio : IDisposable
     public event EventHandler<string> DevicePropertyChanged;
     public event EventHandler<AudioSessionState> SessionStateChanged;
     public event EventHandler<Exception> SessionLoadError;
+    public event EventHandler DevicesChanged;
+
+    // Devices are added and removed from COM notification threads while the plugin reads them from
+    // timer and UI threads, so every access goes through this lock and readers get a snapshot.
+    private readonly object _devicesLock = new object();
+    private readonly List<MMDevice> _devices = new List<MMDevice>();
+    private readonly HashSet<string> _sessionWatchedDeviceIds = new HashSet<string>();
 
     public AudioPolicyConfig AudioPolicyConfig { get; }
 
@@ -23,7 +29,16 @@ public class MMAudio : IDisposable
     public MMDevice DefaultMultimediaRender { get; private set; } = null;
     public MMDevice DefaultCommunicationsRender { get; private set; } = null;
 
-    public ObservableCollection<MMDevice> Devices { get; }
+    public IReadOnlyList<MMDevice> Devices
+    {
+        get
+        {
+            lock (this._devicesLock)
+            {
+                return this._devices.ToArray();
+            }
+        }
+    }
 
     public IEnumerable<MMDevice> CaptureDevices
     {
@@ -47,8 +62,8 @@ public class MMAudio : IDisposable
         {
             return this.RenderDevices
                 .Where(x => x.State == DeviceState.Active)
-                .Where(x => x.AudioSessionManager?.Sessions != null)
-                .SelectMany(x => x.AudioSessionManager.Sessions);
+                .SelectMany(x => (IEnumerable<AudioSessionControl>)x.AudioSessionManager?.Sessions ?? Array.Empty<AudioSessionControl>())
+                .ToArray();
         }
     }
 
@@ -63,57 +78,96 @@ public class MMAudio : IDisposable
 
         this.AudioPolicyConfig = new AudioPolicyConfig();
 
-        if (this._deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia, out MMDevice multimediaCapture))
+        foreach (MMDevice device in this._deviceEnumerator.EnumAudioEndpoints(DataFlow.All, DeviceState.All))
         {
-            this.DefaultMultimediaCapture = multimediaCapture;
-        }
-        if (this._deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications, out MMDevice communicationsCapture))
-        {
-            this.DefaultCommunicationsCapture = communicationsCapture;
+            this.AddDevice(device, raiseEvent: false);
         }
 
-        if (this._deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia, out MMDevice multimediaRender))
-        {
-            this.DefaultMultimediaRender = multimediaRender;
-        }
-        if (this._deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Communications, out MMDevice communicationsRender))
-        {
-            this.DefaultCommunicationsRender = communicationsRender;
-        }
+        this.DefaultMultimediaCapture = this.FindDefaultDevice(DataFlow.Capture, Role.Multimedia);
+        this.DefaultCommunicationsCapture = this.FindDefaultDevice(DataFlow.Capture, Role.Communications);
+        this.DefaultMultimediaRender = this.FindDefaultDevice(DataFlow.Render, Role.Multimedia);
+        this.DefaultCommunicationsRender = this.FindDefaultDevice(DataFlow.Render, Role.Communications);
+    }
 
-        this.Devices = new ObservableCollection<MMDevice>(this._deviceEnumerator.EnumAudioEndpoints(DataFlow.All, DeviceState.All));
-
-        foreach (MMDevice device in this.Devices)
+    // Use the instance from the device list so that a default device is not a second, separately
+    // registered copy of the same endpoint.
+    private MMDevice FindDefaultDevice(DataFlow dataFlow, Role role)
+    {
+        if (this._deviceEnumerator.GetDefaultAudioEndpointId(dataFlow, role, out string deviceId))
         {
-            device.PropertyChanged += (sender, e) => this.DevicePropertyChanged?.Invoke(this, e);
+            return this.FindDevice(deviceId);
         }
+        return null;
+    }
 
-        foreach (MMDevice device in this.RenderDevices.Where(x => x.State == DeviceState.Active))
+    private MMDevice FindDevice(string deviceId)
+    {
+        lock (this._devicesLock)
         {
-            if (device.AudioSessionManager != null)
+            return this._devices.FirstOrDefault(x => x.Id == deviceId);
+        }
+    }
+
+    private void AddDevice(MMDevice device, bool raiseEvent)
+    {
+        lock (this._devicesLock)
+        {
+            if (this._devices.Any(x => x.Id == device.Id))
             {
-                device.AudioSessionManager.SessionCreated += this.OnDeviceSessionCreated;
-                device.SessionLoadError += (s, ex) => this.SessionLoadError?.Invoke(s, ex);
-                if (device.AudioSessionManager.Sessions != null)
-                {
-                    foreach (AudioSessionControl session in device.AudioSessionManager.Sessions)
-                    {
-                        session.StateChanged += this.OnSessionStateChanged;
-                        session.SessionDisconnected += this.OnSessionDisconnected;
-                    }
-                }
+                device.Dispose();
+                return;
+            }
+            this._devices.Add(device);
+        }
+        device.PropertyChanged += (sender, e) => this.DevicePropertyChanged?.Invoke(this, e);
+        device.SessionLoadError += (s, ex) => this.SessionLoadError?.Invoke(s, ex);
+        this.WatchSessions(device);
+        if (raiseEvent)
+        {
+            this.DevicesChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    // Subscribes to session notifications of an active render device. Called again whenever a device
+    // becomes active, so that a device enabled or plugged in after start-up also reports its sessions.
+    private void WatchSessions(MMDevice device)
+    {
+        if (device.DataFlow != DataFlow.Render || device.State != DeviceState.Active)
+        {
+            return;
+        }
+        lock (this._devicesLock)
+        {
+            if (!this._sessionWatchedDeviceIds.Add(device.Id))
+            {
+                return;
+            }
+        }
+        if (device.AudioSessionManager is AudioSessionManager manager)
+        {
+            manager.SessionCreated += this.OnDeviceSessionCreated;
+            manager.StateChanged += this.OnSessionStateChanged;
+        }
+        else
+        {
+            lock (this._devicesLock)
+            {
+                this._sessionWatchedDeviceIds.Remove(device.Id);
             }
         }
     }
 
     public void SetDefaultAudioEndpoint(string deviceId, Role role)
     {
-        this._deviceEnumerator.SetDefaultAudioEndpoint(deviceId, role);
+        if (!string.IsNullOrEmpty(deviceId))
+        {
+            this._deviceEnumerator.SetDefaultAudioEndpoint(deviceId, role);
+        }
     }
 
     private void OnDefaultDeviceChanged(object sender, DefaultDeviceEventArgs e)
     {
-        if (this.Devices.FirstOrDefault(x => x.Id == e.DefaultDeviceId) is MMDevice device)
+        if (this.FindDevice(e.DefaultDeviceId) is MMDevice device)
         {
             if (e.Flow == DataFlow.Capture)
             {
@@ -138,66 +192,68 @@ public class MMAudio : IDisposable
                 }
             }
         }
-        this.DefaultDeviceChanged?.Invoke(this, e);
+        ComCallback.Defer(() => this.DefaultDeviceChanged?.Invoke(this, e));
     }
 
     private void OnDeviceAdded(object sender, DeviceIdEventArgs e)
     {
-        if (this.Devices.FirstOrDefault(x => x.Id == e.DeviceId) is null)
+        // Activating the new device and registering its notifications must not happen inside the callback.
+        ComCallback.Defer(() =>
         {
-            if (this._deviceEnumerator.GetDevice(e.DeviceId) is MMDevice device)
+            if (this.FindDevice(e.DeviceId) is null)
             {
-                device.PropertyChanged += (a, b) => this.DevicePropertyChanged?.Invoke(this, b);
-                if (device.State == DeviceState.Active)
-                {
-                    if (device.AudioSessionManager != null)
-                    {
-                        device.AudioSessionManager.SessionCreated += this.OnDeviceSessionCreated;
-                        if (device.AudioSessionManager.Sessions != null)
-                        {
-                            foreach (AudioSessionControl session in device.AudioSessionManager.Sessions)
-                            {
-                                session.StateChanged += this.OnSessionStateChanged;
-                                session.SessionDisconnected += this.OnSessionDisconnected;
-                            }
-                        }
-                    }
-                }
-                this.Devices.Add(device);
+                this.AddDevice(this._deviceEnumerator.GetDevice(e.DeviceId), raiseEvent: true);
             }
-        }
+        });
     }
 
     private void OnDeviceRemoved(object sender, DeviceIdEventArgs e)
     {
-        if (this.Devices.FirstOrDefault(x => x.Id == e.DeviceId) is MMDevice device)
+        ComCallback.Defer(() =>
         {
-            this.Devices.Remove(device);
+            MMDevice device;
+            lock (this._devicesLock)
+            {
+                device = this._devices.FirstOrDefault(x => x.Id == e.DeviceId);
+                if (device is null)
+                {
+                    return;
+                }
+                this._devices.Remove(device);
+                this._sessionWatchedDeviceIds.Remove(device.Id);
+            }
+            this.DevicesChanged?.Invoke(this, EventArgs.Empty);
             device.Dispose();
-        }
+        });
     }
 
     private void OnDeviceStateChanged(object sender, DeviceStateEventArgs e)
     {
-        if (this.Devices.FirstOrDefault(x => x.Id == e.DeviceId) is MMDevice device)
+        ComCallback.Defer(() =>
         {
-            device.GetState();
-        }
-        this.DeviceStateChanged?.Invoke(this, e);
+            if (this.FindDevice(e.DeviceId) is MMDevice device)
+            {
+                device.GetState();
+                this.WatchSessions(device);
+            }
+            this.DeviceStateChanged?.Invoke(this, e);
+        });
     }
 
     private void OnDevicePropertyChanged(object sender, PropertyValueEventArgs e)
     {
-        if (this.Devices.FirstOrDefault(x => x.Id == e.DeviceId) is MMDevice device)
+        ComCallback.Defer(() =>
         {
-            device.LoadProperties();
-        }
+            if (this.FindDevice(e.DeviceId) is MMDevice device)
+            {
+                device.LoadProperties();
+            }
+        });
     }
 
     private void OnDeviceSessionCreated(object sender, AudioSessionControl e)
     {
-        e.StateChanged += this.OnSessionStateChanged;
-        e.SessionDisconnected += this.OnSessionDisconnected;
+        this.SessionStateChanged?.Invoke(e, e.State);
     }
 
     private void OnSessionStateChanged(object sender, AudioSessionState e)
@@ -205,21 +261,29 @@ public class MMAudio : IDisposable
         this.SessionStateChanged?.Invoke(sender, e);
     }
 
-    private void OnSessionDisconnected(object sender, AudioSessionDisconnectReason e)
-    {
-    }
-
     public void Dispose()
     {
         GC.SuppressFinalize(this);
 
-        foreach (MMDevice device in this.Devices)
+        MMDevice[] devices;
+        lock (this._devicesLock)
+        {
+            devices = this._devices.ToArray();
+            this._devices.Clear();
+            this._sessionWatchedDeviceIds.Clear();
+        }
+        foreach (MMDevice device in devices)
         {
             device.Dispose();
         }
-        this.Devices.Clear();
 
-        this.AudioPolicyConfig.Dispose();
+        try
+        {
+            this.AudioPolicyConfig.Dispose();
+        }
+        catch
+        {
+        }
 
         this._deviceEnumerator.Dispose();
     }

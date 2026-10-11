@@ -13,6 +13,11 @@ internal static class AudioControl
 
     private static MMAudio CreateMMAudio()
     {
+        ComCallback.UnhandledException += (sender, ex) =>
+        {
+            Diag.Error("Core Audio notification", ex);
+            PluginLog.Error(ex, $"[CoreAudio] Notification handling failed: {ex.Message}");
+        };
         MMAudio mmAudio = new MMAudio();
         mmAudio.SessionLoadError += (sender, ex) => PluginLog.Error(ex, $"[AudioSessionCollection] Failed to load audio session: {ex.Message}");
         return mmAudio;

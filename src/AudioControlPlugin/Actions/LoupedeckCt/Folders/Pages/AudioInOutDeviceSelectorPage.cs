@@ -46,9 +46,12 @@ internal class AudioInOutDeviceSelectorPage : FolderPage
 
                 if (iconBmp != null)
                 {
-                    iconBmp.BlueLightFilter();
-                    graphics.DrawImage(iconBmp, (image.Width - iconBmp.Width) / 2, margin1, iconBmp.Width, iconBmp.Height);
-                    iconHeight = iconBmp.Height;
+                    // BlueLightFilter may return a converted copy and dispose the original, so draw what it returns.
+                    using (Bitmap filteredIcon = iconBmp.BlueLightFilter())
+                    {
+                        graphics.DrawImage(filteredIcon, (image.Width - filteredIcon.Width) / 2, margin1, filteredIcon.Width, filteredIcon.Height);
+                        iconHeight = filteredIcon.Height;
+                    }
                 }
 
                 RectangleF valueRectangle = new RectangleF(0, margin1 + iconHeight + margin2, image.Width, image.Height - (margin1 + iconHeight + margin2));

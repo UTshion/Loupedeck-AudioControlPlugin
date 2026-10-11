@@ -20,6 +20,8 @@ public class MMDeviceEnumerator : IDisposable
 
     private readonly IPolicyConfig policyConfigComObj;
 
+    private int _disposed = 0;
+
     /// <summary>
     /// Creates a new MM Device Enumerator.
     /// </summary>
@@ -122,9 +124,20 @@ public class MMDeviceEnumerator : IDisposable
     public void Dispose()
     {
         GC.SuppressFinalize(this);
-        Marshal.ThrowExceptionForHR(this.mmDeviceEnumeratorComObj.UnregisterEndpointNotificationCallback(this.mmNotificationClient));
-        Marshal.ReleaseComObject(this.mmDeviceEnumeratorComObj);
-        Marshal.ReleaseComObject(this.policyConfigComObj);
+        if (Interlocked.Exchange(ref this._disposed, 1) == 1)
+        {
+            return;
+        }
+        // Also runs from the finalizer thread, where an exception would terminate the host process.
+        try
+        {
+            Marshal.ThrowExceptionForHR(this.mmDeviceEnumeratorComObj.UnregisterEndpointNotificationCallback(this.mmNotificationClient));
+            Marshal.ReleaseComObject(this.mmDeviceEnumeratorComObj);
+            Marshal.ReleaseComObject(this.policyConfigComObj);
+        }
+        catch
+        {
+        }
     }
 
     ~MMDeviceEnumerator()

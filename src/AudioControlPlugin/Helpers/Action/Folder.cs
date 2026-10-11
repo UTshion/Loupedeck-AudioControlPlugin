@@ -5,11 +5,22 @@ using System.Linq;
 
 internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
 {
+    private const int BACK_DEBOUNCE_MS = 500;
+
     private FolderPage? _homePage = null;
 
-    public List<string> ButtonActionNames { get; }
+    // Guards the page stack; held only briefly and never while calling into the Loupedeck service.
+    private readonly object _stackLock = new object();
+    private readonly List<FolderPage> _pageStack = new List<FolderPage>();
 
-    public Stack<FolderPage> PageStack { get; }
+    // Serializes whole navigation operations (leave, push/pop, enter), which run on service threads.
+    private readonly object _navigationLock = new object();
+    private FolderPage? _enteredPage = null;
+    private long _lastBackTimestamp = 0;
+    private volatile bool _closing = false;
+    private long _closingTimestamp = 0;
+
+    public List<string> ButtonActionNames { get; }
 
     public FolderPage? HomePage
     {
@@ -19,11 +30,14 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         }
         set
         {
-            this._homePage = value;
-            this.PageStack.Clear();
-            if (this._homePage is not null)
+            lock (this._stackLock)
             {
-                this.PageStack.Push(this._homePage);
+                this._homePage = value;
+                this._pageStack.Clear();
+                if (this._homePage is not null)
+                {
+                    this._pageStack.Add(this._homePage);
+                }
             }
         }
     }
@@ -32,11 +46,21 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
     {
         get
         {
-            if (this.PageStack.Count > 0)
+            lock (this._stackLock)
             {
-                return this.PageStack.Peek();
+                return this._pageStack.Count > 0 ? this._pageStack[^1] : null;
             }
-            return null;
+        }
+    }
+
+    public int PageDepth
+    {
+        get
+        {
+            lock (this._stackLock)
+            {
+                return this._pageStack.Count;
+            }
         }
     }
 
@@ -48,72 +72,212 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         base.SupportedDevices = supportedDevices;
 
         this.ButtonActionNames = new List<string>();
-        this.PageStack = new Stack<FolderPage>();
+    }
+
+    // Runs a navigation step serialized against the others. Calls back into the Loupedeck service
+    // (Close, *ActionNamesChanged) are queued in 'after' and made only once the lock is released:
+    // Close() waits for the service to run Deactivate on another thread, and Deactivate needs this lock.
+    private void Navigate(string operation, Action<List<Action>> action)
+    {
+        List<Action> after = new List<Action>();
+        if (!Monitor.TryEnter(this._navigationLock, TimeSpan.FromSeconds(5)))
+        {
+            Diag.Log($"{operation}: skipped, another navigation is still running");
+            PluginLog.Warning($"Folder navigation '{operation}' skipped: another navigation is still running");
+            return;
+        }
+        try
+        {
+            action(after);
+        }
+        catch (Exception ex)
+        {
+            Diag.Error($"Folder.{operation}", ex);
+            PluginLog.Error(ex, $"Folder navigation '{operation}' failed: {ex.Message}");
+        }
+        finally
+        {
+            Monitor.Exit(this._navigationLock);
+        }
+        foreach (Action notify in after)
+        {
+            try
+            {
+                notify();
+            }
+            catch (Exception ex)
+            {
+                Diag.Error($"Folder.{operation} (notify)", ex);
+            }
+        }
+    }
+
+    // Enter/Leave subscribe and unsubscribe timers and audio events, so they must stay strictly paired.
+    private void EnterCurrentPage()
+    {
+        FolderPage? page = this.CurrentPage;
+        if (page is not null && !ReferenceEquals(this._enteredPage, page))
+        {
+            this.LeaveEnteredPage();
+            this._enteredPage = page;
+            page.Enter();
+        }
+    }
+
+    private void LeaveEnteredPage()
+    {
+        FolderPage? page = this._enteredPage;
+        this._enteredPage = null;
+        page?.Leave();
+    }
+
+    private void NotifyActionNamesChanged(List<Action> after)
+    {
+        after.Add(this.ButtonActionNamesChanged);
+        after.Add(this.EncoderActionNamesChanged);
     }
 
     public void NavigateTo(FolderPage nextPage)
     {
-        if (nextPage == null || this.CurrentPage == null)
+        this.Navigate(nameof(NavigateTo), after =>
         {
-            return;
-        }
-        this.CurrentPage.Leave();
-        this.PageStack.Push(nextPage);
-        this.ButtonActionNamesChanged();
-        this.EncoderActionNamesChanged();
-        this.CurrentPage.Load();
-        this.CurrentPage.Enter();
+            Diag.Log($"NavigateTo {nextPage?.Name} from {this.CurrentPage?.Name} depth={this.PageDepth}");
+            if (nextPage == null || this.CurrentPage == null)
+            {
+                return;
+            }
+            this.LeaveEnteredPage();
+            lock (this._stackLock)
+            {
+                this._pageStack.Add(nextPage);
+            }
+            nextPage.Load();
+            this.EnterCurrentPage();
+            this.NotifyActionNamesChanged(after);
+        });
     }
 
     public void LeavePage()
     {
-        if (this.CurrentPage == null)
+        this.Navigate(nameof(LeavePage), after =>
         {
+            Diag.Log($"LeavePage {this.CurrentPage?.Name} depth={this.PageDepth}");
+            FolderPage? page;
+            lock (this._stackLock)
+            {
+                if (this._pageStack.Count <= 1)
+                {
+                    page = null;
+                }
+                else
+                {
+                    page = this._pageStack[^1];
+                    this._pageStack.RemoveAt(this._pageStack.Count - 1);
+                }
+            }
+            if (page is null)
+            {
+                // Exit from the home page. The home page always stays on the stack, so the folder can
+                // never be reopened without a page (that state showed as an all-black screen).
+                // Until the folder is activated again, any further Back/Exit is a late duplicate.
+                this._closing = true;
+                Interlocked.Exchange(ref this._closingTimestamp, Environment.TickCount64);
+                after.Add(base.Close);
+                return;
+            }
+            this.LeaveEnteredPage();
+            page.Unload();
+            this.EnterCurrentPage();
+            this.NotifyActionNamesChanged(after);
+        });
+    }
+
+    private void OnBackRequested()
+    {
+        // A tap on Back/Exit reaches the folder twice (touch event and command), and the second one can
+        // arrive late; the time window catches Back, the closing flag catches a late Exit.
+        long now = Environment.TickCount64;
+        // The closing flag expires in case the service never deactivates the folder after Close().
+        bool closing = this._closing && now - Interlocked.Read(ref this._closingTimestamp) < 3000;
+        if (closing || now - Interlocked.Read(ref this._lastBackTimestamp) < BACK_DEBOUNCE_MS)
+        {
+            Diag.Log("Back ignored (duplicate of the same tap)");
             return;
         }
-        this.CurrentPage.Leave();
-        this.CurrentPage.Unload();
-        this.PageStack.Pop();
-        if (this.PageStack.Count == 0)
-        {
-            base.Close();
-        }
-        else
-        {
-            this.ButtonActionNamesChanged();
-            this.EncoderActionNamesChanged();
-            this.CurrentPage.Enter();
-        }
+        Interlocked.Exchange(ref this._lastBackTimestamp, now);
+        this.LeavePage();
     }
 
     public void ParseActionParameter(string actionParameter, out string pageName, out string pageActionParameter)
     {
         int index = actionParameter.IndexOf('+');
+        if (index < 0)
+        {
+            pageName = string.Empty;
+            pageActionParameter = actionParameter;
+            return;
+        }
         pageName = actionParameter.Substring(0, index);
         pageActionParameter = actionParameter.Substring(index + 1);
     }
 
     public FolderPage? GetPage(string pageName)
     {
-        return this.PageStack.FirstOrDefault(p => p.Name == pageName);
+        lock (this._stackLock)
+        {
+            for (int i = this._pageStack.Count - 1; i >= 0; i--)
+            {
+                if (this._pageStack[i].Name == pageName)
+                {
+                    return this._pageStack[i];
+                }
+            }
+            return null;
+        }
     }
 
     public override bool Activate()
     {
-        this.CurrentPage?.Load();
-        this.CurrentPage?.Enter();
+        this.Navigate(nameof(Activate), after =>
+        {
+            this._closing = false;
+            lock (this._stackLock)
+            {
+                if (this._pageStack.Count == 0 && this._homePage is not null)
+                {
+                    this._pageStack.Add(this._homePage);
+                }
+            }
+            Diag.Log($"Folder.Activate {this.GetType().Name} page={this.CurrentPage?.Name} depth={this.PageDepth}");
+            this.CurrentPage?.Load();
+            this.EnterCurrentPage();
+            // Names may have changed while the page was not listening.
+            this.NotifyActionNamesChanged(after);
+        });
         return base.Activate();
     }
 
     public override bool Deactivate()
     {
-        this.CurrentPage?.Leave();
-        this.CurrentPage?.Unload();
-        this.PageStack.Clear();
-        if (this._homePage is not null)
+        this.Navigate(nameof(Deactivate), after =>
         {
-            this.PageStack.Push(this._homePage);
-        }
+            Diag.Log($"Folder.Deactivate {this.GetType().Name} page={this.CurrentPage?.Name} depth={this.PageDepth}");
+            this.LeaveEnteredPage();
+            List<FolderPage> pages;
+            lock (this._stackLock)
+            {
+                pages = this._pageStack.ToList();
+                this._pageStack.Clear();
+                if (this._homePage is not null)
+                {
+                    this._pageStack.Add(this._homePage);
+                }
+            }
+            for (int i = pages.Count - 1; i >= 0; i--)
+            {
+                pages[i].Unload();
+            }
+        });
         return base.Deactivate();
     }
 
@@ -129,36 +293,40 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
 
     public override IEnumerable<string> GetButtonPressActionNames(DeviceType deviceType)
     {
+        FolderPage? page = this.CurrentPage;
         lock (this.ButtonActionNames)
         {
             this.ButtonActionNames.Clear();
-            if (this.CurrentPage != null)
+            if (page != null)
             {
-                this.ButtonActionNames.Add($"{this.CurrentPage.Name}+@back");
-                this.ButtonActionNames.AddRange(this.CurrentPage.GetButtonPressActionNames(deviceType).Select(s => $"{this.CurrentPage.Name}+{s}"));
+                this.ButtonActionNames.Add($"{page.Name}+@back");
+                this.ButtonActionNames.AddRange(page.GetButtonPressActionNames(deviceType).Select(s => $"{page.Name}+{s}"));
             }
-            return this.ButtonActionNames.Select(s => base.CreateCommandName(s));
+            Diag.Log($"GetButtonPressActionNames page={page?.Name} count={this.ButtonActionNames.Count}");
+            // Materialize while locked: a lazy query would be enumerated by the service after the lock
+            // is released, while another thread may already be refilling the list.
+            return this.ButtonActionNames.Select(s => base.CreateCommandName(s)).ToArray();
         }
     }
 
     public override IEnumerable<string> GetEncoderRotateActionNames(DeviceType deviceType)
     {
-        List<string> actionNames = new List<string>();
-        if (this.CurrentPage != null)
+        FolderPage? page = this.CurrentPage;
+        if (page == null)
         {
-            actionNames.AddRange(this.CurrentPage.GetEncoderRotateActionNames(deviceType).Select(s => $"{this.CurrentPage.Name}+{s}"));
+            return Array.Empty<string>();
         }
-        return actionNames.Select(s => base.CreateAdjustmentName(s));
+        return page.GetEncoderRotateActionNames(deviceType).Select(s => base.CreateAdjustmentName($"{page.Name}+{s}")).ToArray();
     }
 
     public override IEnumerable<string> GetEncoderPressActionNames(DeviceType deviceType)
     {
-        List<string> actionNames = new List<string>();
-        if (this.CurrentPage != null)
+        FolderPage? page = this.CurrentPage;
+        if (page == null)
         {
-            actionNames.AddRange(this.CurrentPage.GetEncoderPressActionNames(deviceType).Select(s => $"{this.CurrentPage.Name}+{s}"));
+            return Array.Empty<string>();
         }
-        return actionNames.Select(s => base.CreateCommandName(s));
+        return page.GetEncoderPressActionNames(deviceType).Select(s => base.CreateCommandName($"{page.Name}+{s}")).ToArray();
     }
 
     public override BitmapImage GetCommandImage(string actionParameter, PluginImageSize imageSize)
@@ -168,7 +336,7 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         {
             if (pageActionParameter == "@back")
             {
-                if (this.PageStack.Count > 1)
+                if (this.PageDepth > 1)
                 {
                     pageActionParameter = "Back";
                 }
@@ -180,9 +348,18 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
             }
             else
             {
-                return page.GetCommandImage(pageActionParameter, imageSize);
+                try
+                {
+                    return page.GetCommandImage(pageActionParameter, imageSize);
+                }
+                catch (Exception ex)
+                {
+                    Diag.Error($"{page.Name}.GetCommandImage({pageActionParameter})", ex);
+                    return PluginImage.DrawBlackImage(imageSize);
+                }
             }
         }
+        Diag.Throttled("folder-black", $"BLACK Folder.GetCommandImage: requested page={pageName} current={this.CurrentPage?.Name} depth={this.PageDepth}");
         return PluginImage.DrawBlackImage(imageSize);
     }
 
@@ -196,6 +373,31 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         return PluginImage.DrawBlackImage(imageSize);
     }
 
+    // Input handlers talk to audio endpoints that can vanish at any moment (app closed, device unplugged);
+    // a COM exception there must not escape into the Loupedeck service.
+    private void Guard(string handler, Action action)
+    {
+        this.Guard(handler, () =>
+        {
+            action();
+            return true;
+        });
+    }
+
+    private bool Guard(string handler, Func<bool> action)
+    {
+        try
+        {
+            return action();
+        }
+        catch (Exception ex)
+        {
+            Diag.Error($"Folder.{handler}", ex);
+            PluginLog.Warning(ex, $"{handler} failed: {ex.Message}");
+            return false;
+        }
+    }
+
     public override void RunCommand(string actionParameter)
     {
         this.ParseActionParameter(actionParameter, out string pageName, out string pageActionParameter);
@@ -203,11 +405,11 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         {
             if (pageActionParameter == "@back")
             {
-                this.LeavePage();
+                this.OnBackRequested();
             }
             else
             {
-                page.RunCommand(pageActionParameter);
+                this.Guard(nameof(RunCommand), () => page.RunCommand(pageActionParameter));
             }
         }
         base.RunCommand(pageActionParameter);
@@ -218,7 +420,7 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         this.ParseActionParameter(actionParameter, out string pageName, out string pageActionParameter);
         if (this.GetPage(pageName) is FolderPage page && page == this.CurrentPage)
         {
-            page.ApplyAdjustment(pageActionParameter, diff);
+            this.Guard(nameof(ApplyAdjustment), () => page.ApplyAdjustment(pageActionParameter, diff));
         }
         base.ApplyAdjustment(pageActionParameter, diff);
     }
@@ -230,7 +432,7 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         {
             if (buttonEvent.EventType == DeviceButtonEventType.Press)
             {
-                return page.ProcessButtonEvent2(pageActionParameter, buttonEvent);
+                return this.Guard(nameof(ProcessButtonEvent2), () => page.ProcessButtonEvent2(pageActionParameter, buttonEvent));
             }
         }
         return base.ProcessButtonEvent2(actionParameter, buttonEvent);
@@ -241,7 +443,7 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         this.ParseActionParameter(actionParameter, out string pageName, out string pageActionParameter);
         if (this.GetPage(pageName) is FolderPage page && page == this.CurrentPage)
         {
-            return page.ProcessEncoderEvent(pageActionParameter, encoderEvent);
+            return this.Guard(nameof(ProcessEncoderEvent), () => page.ProcessEncoderEvent(pageActionParameter, encoderEvent));
         }
         return base.ProcessEncoderEvent(actionParameter, encoderEvent);
     }
@@ -255,12 +457,12 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
             {
                 if (touchEvent.EventType == DeviceTouchEventType.Tap)
                 {
-                    this.LeavePage();
+                    this.OnBackRequested();
                 }
             }
             else
             {
-                return page.ProcessTouchEvent(pageActionParameter, touchEvent);
+                return this.Guard(nameof(ProcessTouchEvent), () => page.ProcessTouchEvent(pageActionParameter, touchEvent));
             }
         }
         return base.ProcessTouchEvent(actionParameter, touchEvent);

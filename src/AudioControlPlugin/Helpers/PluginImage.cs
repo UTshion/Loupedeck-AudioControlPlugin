@@ -126,7 +126,7 @@ internal static class PluginImage
     public static BitmapImage DrawFolderIconImage(bool pluginName, string iconPath, PluginImageSize imageSize)
     {
         PluginImage.GetImageSize(imageSize, out int imageWidth, out int imageHeight);
-        using (Bitmap icon = PluginImage.ReadBitmap(iconPath))
+        using (Bitmap icon = PluginImage.ReadBitmap(iconPath).Recolor(Color.White.BlueLightFilter()))
         using (Bitmap image = new Bitmap(imageWidth, imageHeight))
         using (Graphics graphics = Graphics.FromImage(image))
         using (Font calibri10Font = new Font("Calibri", 10, FontStyle.Regular))
@@ -146,7 +146,6 @@ internal static class PluginImage
                 graphics.DrawString("Control", calibri10Font, whiteABrush, new RectangleF(2, pluginNameY + 12, 76, 12), format);
             }
 
-            icon.Recolor(Color.White.BlueLightFilter());
             graphics.DrawImage(icon, (image.Width - icon.Width) / 2, (image.Height - icon.Height) / 2 + iconY, icon.Width, icon.Height);
 
             return PluginImage.ToBitmapImage(image);
@@ -173,10 +172,9 @@ internal static class PluginImage
         PluginImage.GetImageSize(imageSize, out int imageWidth, out int imageHeight);
         using (Bitmap image = new Bitmap(imageWidth, imageHeight))
         using (Graphics graphics = Graphics.FromImage(image))
-        using (Bitmap icon = PluginImage.ReadBitmap(iconPath))
+        using (Bitmap icon = PluginImage.ReadBitmap(iconPath).Recolor(Color.White.BlueLightFilter()))
         {
             graphics.Clear(Color.Black);
-            icon.Recolor(Color.White.BlueLightFilter());
             graphics.DrawImage(icon, (image.Width - icon.Width) / 2, (image.Height - icon.Height) / 2, icon.Width, icon.Height);
             return PluginImage.ToBitmapImage(image);
         }
