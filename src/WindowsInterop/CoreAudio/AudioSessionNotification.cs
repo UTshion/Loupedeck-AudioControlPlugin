@@ -2,7 +2,7 @@
 
 internal class AudioSessionNotification : IAudioSessionNotification
 {
-    public event EventHandler<AudioSessionControl> SessionCreated;
+    public event EventHandler<IAudioSessionControl> SessionCreated;
 
     public AudioSessionNotification()
     {
@@ -10,6 +10,7 @@ internal class AudioSessionNotification : IAudioSessionNotification
 
     void IAudioSessionNotification.OnSessionCreated(IAudioSessionControl newSession)
     {
-        this.SessionCreated?.Invoke(null, new AudioSessionControl(newSession));
+        // Only hand the COM object over; the wrapper is built outside the callback.
+        ComCallback.Run(() => this.SessionCreated?.Invoke(null, newSession));
     }
 }

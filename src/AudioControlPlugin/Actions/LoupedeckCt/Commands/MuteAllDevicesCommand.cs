@@ -36,9 +36,8 @@ internal class MuteAllDevicesCommand : PluginDynamicCommand
         {
             graphics.Clear(Color.Black);
             graphics.DrawString(displayName, calibri10Font, whiteBrush, new RectangleF(2, 14, 76, 24), format);
-            using (Bitmap icon = PluginImage.ReadBitmap(iconPath))
+            using (Bitmap icon = PluginImage.ReadBitmap(iconPath).Recolor(Color.White.BlueLightFilter()))
             {
-                icon.Recolor(Color.White.BlueLightFilter());
                 graphics.DrawImage(icon, (image.Width - icon.Width) / 2, 37, icon.Width, icon.Height);
             }
             return PluginImage.ToBitmapImage(image);

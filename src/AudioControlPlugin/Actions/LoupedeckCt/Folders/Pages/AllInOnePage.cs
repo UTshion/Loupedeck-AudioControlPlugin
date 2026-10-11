@@ -57,7 +57,7 @@ internal class AllInOnePage : FolderPage
             categoryName = "Settings";
             iconPath = SETTINGS_RESOURCE_PATH;
         }
-        using (Bitmap icon = PluginImage.ReadBitmap(iconPath))
+        using (Bitmap icon = PluginImage.ReadBitmap(iconPath).Recolor(Color.White.BlueLightFilter()))
         using (Bitmap image = new Bitmap(80, 80))
         using (Graphics graphics = Graphics.FromImage(image))
         using (Font valueFont = new Font("Calibri", 11, FontStyle.Bold))
@@ -70,7 +70,6 @@ internal class AllInOnePage : FolderPage
             int margin1 = 12;
             int margin2 = -2;
 
-            icon.Recolor(Color.White.BlueLightFilter());
             graphics.DrawImage(icon, (image.Width - icon.Width) / 2, margin1, icon.Width, icon.Height);
 
             RectangleF valueRectangle = new RectangleF(0, margin1 + icon.Height + margin2, image.Width, image.Height - (margin1 + icon.Height + margin2));

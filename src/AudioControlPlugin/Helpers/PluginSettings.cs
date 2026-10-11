@@ -79,7 +79,8 @@ internal static class PluginSettings
         set
         {
             _preferDecibels = value;
-            _plugin?.SetPluginSetting("useScalarVolume", value.ToString());
+            // Must be the key the getter reads, or the choice is lost on restart.
+            _plugin?.SetPluginSetting("preferDecibels", value.ToString());
         }
     }
 
@@ -162,5 +163,16 @@ internal static class PluginSettings
     public static void Init(Plugin plugin)
     {
         _plugin = plugin;
+    }
+
+    // Forget cached values so they are read again from the (possibly cleared) plugin settings.
+    public static void ResetCache()
+    {
+        _blueLightFilterEnabled = null;
+        _isWindowsIconStyle = null;
+        _preferDecibels = null;
+        _peakMeterEnabled = null;
+        _fps = null;
+        _saveImageOnDisk = null;
     }
 }

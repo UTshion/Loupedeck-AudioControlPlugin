@@ -13,6 +13,7 @@ internal class AudioDevicesPage : FolderPage
     private readonly ActionImageStore<AudioImageData> _actionImageStore;
 
     private string _selectedActionName = string.Empty;
+    private readonly RefreshGate _refreshGate = new RefreshGate();
 
     public AudioDevicesPage(Folder parent, DataFlow dataFlow) : base(parent)
     {
@@ -22,9 +23,29 @@ internal class AudioDevicesPage : FolderPage
 
     private void Plugin_OnElapsed(object? sender, ElapsedEventArgs e)
     {
-        foreach (string actionName in base.ButtonActionNames)
+        if (!this._refreshGate.TryEnter())
         {
-            this.RefreshActionImage(actionName);
+            return;
+        }
+        try
+        {
+            List<string> names = base.ButtonActionNames;
+            foreach (string actionName in names)
+            {
+                try
+                {
+                    this.RefreshActionImage(actionName);
+                }
+                catch (Exception ex)
+                {
+                    PluginLog.ThrottledWarning($"AudioDevicesPage.RefreshActionImage({actionName})", ex);
+                }
+            }
+            this._actionImageStore.Retain(names);
+        }
+        finally
+        {
+            this._refreshGate.Exit();
         }
     }
 
@@ -38,7 +59,7 @@ internal class AudioDevicesPage : FolderPage
         base.ButtonActionNamesChanged();
     }
 
-    private void MMAudio_OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private void MMAudio_OnDevicesChanged(object? sender, EventArgs e)
     {
         base.ButtonActionNamesChanged();
     }
@@ -48,7 +69,7 @@ internal class AudioDevicesPage : FolderPage
         AudioControlPlugin.RefreshTimer.Elapsed += this.Plugin_OnElapsed;
         AudioControl.MMAudio.DeviceStateChanged += this.MMAudio_OnDeviceStateChanged;
         AudioControl.MMAudio.DevicePropertyChanged += this.MMAudio_OnDevicePropertyChanged;
-        AudioControl.MMAudio.Devices.CollectionChanged += this.MMAudio_OnCollectionChanged;
+        AudioControl.MMAudio.DevicesChanged += this.MMAudio_OnDevicesChanged;
     }
 
     public override void Leave()
@@ -56,12 +77,13 @@ internal class AudioDevicesPage : FolderPage
         AudioControlPlugin.RefreshTimer.Elapsed -= this.Plugin_OnElapsed;
         AudioControl.MMAudio.DeviceStateChanged -= this.MMAudio_OnDeviceStateChanged;
         AudioControl.MMAudio.DevicePropertyChanged -= this.MMAudio_OnDevicePropertyChanged;
-        AudioControl.MMAudio.Devices.CollectionChanged -= this.MMAudio_OnCollectionChanged;
+        AudioControl.MMAudio.DevicesChanged -= this.MMAudio_OnDevicesChanged;
     }
 
     public override void Unload()
     {
         this._selectedActionName = string.Empty;
+        this._actionImageStore.Clear();
     }
 
     public void RefreshActionImage(string actionParameter)
@@ -84,6 +106,10 @@ internal class AudioDevicesPage : FolderPage
             return bitmapImage;
         }
         this.RefreshActionImage(actionParameter);
+        if (this._actionImageStore.TryGetImage(actionParameter, imageSize, out bitmapImage))
+        {
+            return bitmapImage;
+        }
         return PluginImage.DrawBlackImage(imageSize);
     }
 

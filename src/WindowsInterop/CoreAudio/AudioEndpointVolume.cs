@@ -31,6 +31,9 @@ public class AudioEndpointVolume : IDisposable
         set
         {
             Marshal.ThrowExceptionForHR(this.realAudioEndPointVolume.SetMasterVolumeLevel(value, this.NotificationGuid));
+            // Refresh the cache now: the change notification arrives later, and rapid relative adjustments would otherwise read a stale value.
+            this.GetMasterVolumeLevel();
+            this.GetMasterVolumeLevelScalar();
         }
     }
 
@@ -43,6 +46,8 @@ public class AudioEndpointVolume : IDisposable
         set
         {
             Marshal.ThrowExceptionForHR(this.realAudioEndPointVolume.SetMasterVolumeLevelScalar(value, this.NotificationGuid));
+            this.GetMasterVolumeLevel();
+            this.GetMasterVolumeLevelScalar();
         }
     }
 
@@ -55,6 +60,7 @@ public class AudioEndpointVolume : IDisposable
         set
         {
             Marshal.ThrowExceptionForHR(this.realAudioEndPointVolume.SetMute(value, this.NotificationGuid));
+            this._mute = value;
         }
     }
 
@@ -109,6 +115,8 @@ public class AudioEndpointVolume : IDisposable
         Marshal.ThrowExceptionForHR(this.realAudioEndPointVolume.VolumeStepDown(this.NotificationGuid));
     }
 
+    private int _disposed = 0;
+
     private void OnNotify(object sender, IntPtr notifyData)
     {
         AudioVolumeNotificationData data = Marshal.PtrToStructure<AudioVolumeNotificationData>(notifyData);
@@ -137,9 +145,20 @@ public class AudioEndpointVolume : IDisposable
 
     public void Dispose()
     {
-        Marshal.ThrowExceptionForHR(this.realAudioEndPointVolume.UnregisterControlChangeNotify(this.audioEndpointVolumeCallback));
-        //Marshal.ReleaseComObject(this.realAudioEndPointVolume);
         GC.SuppressFinalize(this);
+        if (Interlocked.Exchange(ref this._disposed, 1) == 1)
+        {
+            return;
+        }
+        // Also runs from the finalizer thread, where an exception would terminate the host process.
+        try
+        {
+            Marshal.ThrowExceptionForHR(this.realAudioEndPointVolume.UnregisterControlChangeNotify(this.audioEndpointVolumeCallback));
+        }
+        catch
+        {
+        }
+        //Marshal.ReleaseComObject(this.realAudioEndPointVolume);
     }
 
     ~AudioEndpointVolume()

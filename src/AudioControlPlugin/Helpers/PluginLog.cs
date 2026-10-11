@@ -26,4 +26,19 @@ internal static class PluginLog
     public static void Error(string text) => PluginLog._pluginLogFile?.Error(text);
 
     public static void Error(Exception ex, string text) => PluginLog._pluginLogFile?.Error(ex, text);
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _lastWarningByKey = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
+
+    // For failures inside the refresh loop, which runs up to 30 times per second: log each distinct
+    // failure at most every 10 seconds instead of flooding the plugin log.
+    public static void ThrottledWarning(string where, Exception ex)
+    {
+        long now = Environment.TickCount64;
+        long last = _lastWarningByKey.GetOrAdd(where, long.MinValue);
+        if (last == long.MinValue || now - last >= 10_000)
+        {
+            _lastWarningByKey[where] = now;
+            PluginLog.Warning(ex, $"{where} failed: {ex.Message}");
+        }
+    }
 }

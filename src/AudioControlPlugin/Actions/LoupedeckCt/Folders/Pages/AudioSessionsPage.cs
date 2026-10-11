@@ -23,6 +23,7 @@ internal class AudioSessionsPage : FolderPage
     private IAudioControlDevice? _capture = null;
     private IEnumerable<IAudioControlSession>? _sessions = null;
     private string _selectedActionName = string.Empty;
+    private readonly RefreshGate _refreshGate = new RefreshGate();
 
     public AudioSessionsPage(Folder parent) : base(parent)
     {
@@ -50,10 +51,40 @@ internal class AudioSessionsPage : FolderPage
 
     private void Plugin_OnElapsed(object? sender, ElapsedEventArgs e)
     {
-        foreach (string actionName in base.ButtonActionNames)
+        if (!this._refreshGate.TryEnter())
         {
-            this.RefreshActionImage(actionName);
+            return;
         }
+        try
+        {
+            List<string> names = base.ButtonActionNames;
+            foreach (string actionName in names)
+            {
+                // One failing session (e.g. its process just exited) must not stop the others from refreshing.
+                try
+                {
+                    this.RefreshActionImage(actionName);
+                }
+                catch (Exception ex)
+                {
+                    PluginLog.ThrottledWarning($"AudioSessionsPage.RefreshActionImage({actionName})", ex);
+                }
+            }
+            this._actionImageStore.Retain(names);
+        }
+        catch (Exception ex)
+        {
+            PluginLog.ThrottledWarning("AudioSessionsPage.Plugin_OnElapsed", ex);
+        }
+        finally
+        {
+            this._refreshGate.Exit();
+        }
+    }
+
+    private void MMAudio_OnDefaultDeviceChanged(object? sender, DefaultDeviceEventArgs e)
+    {
+        base.ButtonActionNamesChanged();
     }
 
     private void MMAudio_OnSessionStateChanged(object? sender, AudioSessionState e)
@@ -71,7 +102,7 @@ internal class AudioSessionsPage : FolderPage
         base.ButtonActionNamesChanged();
     }
 
-    private void MMAudio_OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private void MMAudio_OnDevicesChanged(object? sender, EventArgs e)
     {
         base.ButtonActionNamesChanged();
     }
@@ -82,7 +113,8 @@ internal class AudioSessionsPage : FolderPage
         AudioControl.MMAudio.SessionStateChanged += this.MMAudio_OnSessionStateChanged;
         AudioControl.MMAudio.DeviceStateChanged += this.MMAudio_OnDeviceStateChanged;
         AudioControl.MMAudio.DevicePropertyChanged += this.MMAudio_OnDevicePropertyChanged;
-        AudioControl.MMAudio.Devices.CollectionChanged += this.MMAudio_OnCollectionChanged;
+        AudioControl.MMAudio.DevicesChanged += this.MMAudio_OnDevicesChanged;
+        AudioControl.MMAudio.DefaultDeviceChanged += this.MMAudio_OnDefaultDeviceChanged;
     }
 
     public override void Leave()
@@ -91,12 +123,14 @@ internal class AudioSessionsPage : FolderPage
         AudioControl.MMAudio.SessionStateChanged -= this.MMAudio_OnSessionStateChanged;
         AudioControl.MMAudio.DeviceStateChanged -= this.MMAudio_OnDeviceStateChanged;
         AudioControl.MMAudio.DevicePropertyChanged -= this.MMAudio_OnDevicePropertyChanged;
-        AudioControl.MMAudio.Devices.CollectionChanged -= this.MMAudio_OnCollectionChanged;
+        AudioControl.MMAudio.DevicesChanged -= this.MMAudio_OnDevicesChanged;
+        AudioControl.MMAudio.DefaultDeviceChanged -= this.MMAudio_OnDefaultDeviceChanged;
     }
 
     public override void Unload()
     {
         this._selectedActionName = string.Empty;
+        this._actionImageStore.Clear();
     }
 
     public void RefreshActionImage(string actionParameter)
@@ -114,11 +148,23 @@ internal class AudioSessionsPage : FolderPage
 
     public BitmapImage GetImage(string actionParameter, PluginImageSize imageSize)
     {
-        if (this._actionImageStore.TryGetImage(actionParameter, imageSize, out BitmapImage? bitmapImage))
+        try
         {
-            return bitmapImage;
+            if (this._actionImageStore.TryGetImage(actionParameter, imageSize, out BitmapImage? bitmapImage))
+            {
+                return bitmapImage;
+            }
+            this.RefreshActionImage(actionParameter);
+            // Return the image just drawn instead of a black placeholder for one frame.
+            if (this._actionImageStore.TryGetImage(actionParameter, imageSize, out bitmapImage))
+            {
+                return bitmapImage;
+            }
         }
-        this.RefreshActionImage(actionParameter);
+        catch (Exception ex)
+        {
+            PluginLog.ThrottledWarning($"AudioSessionsPage.GetImage({actionParameter})", ex);
+        }
         return PluginImage.DrawBlackImage(imageSize);
     }
 
@@ -197,12 +243,19 @@ internal class AudioSessionsPage : FolderPage
 
     public override bool ProcessEncoderEvent(string actionParameter, DeviceEncoderEvent encoderEvent)
     {
-        if (actionParameter == "encoder-rotate")
+        try
         {
-            if (AudioControl.TryGetAudioControl(this._selectedActionName, null, out IAudioControl? audioControl))
+            if (actionParameter == "encoder-rotate")
             {
-                AudioControl.SetRelativeVolume(audioControl, encoderEvent.Clicks);
+                if (AudioControl.TryGetAudioControl(this._selectedActionName, null, out IAudioControl? audioControl))
+                {
+                    AudioControl.SetRelativeVolume(audioControl, encoderEvent.Clicks);
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            PluginLog.ThrottledWarning("AudioSessionsPage.ProcessEncoderEvent", ex);
         }
         return false;
     }

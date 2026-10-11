@@ -87,6 +87,9 @@ internal class AudioControlAction
     private ConcurrentDictionary<string, string> EndpointDisplayNames { get; }
     private ActionImageStore<AudioImageData> ActionImageStore { get; }
 
+    private readonly RefreshGate _refreshGate = new RefreshGate();
+    private readonly ConcurrentDictionary<string, (string DisplayName, string IconPath, long Timestamp)> _unavailableAppInfo = new ConcurrentDictionary<string, (string DisplayName, string IconPath, long Timestamp)>();
+
     public AudioControlAction(IActionEditorAction action)
     {
         this.Parent = action;
@@ -482,16 +485,9 @@ internal class AudioControlAction
                 {
                     string displayName = string.Empty;
                     string iconPath = string.Empty;
-                    AudioSessionInstanceIdentifier asii = AudioSessionInstanceIdentifier.FromString(endpointId);
-                    if (AppInfo.FromProcess(asii.ProcessId) is AppInfo appInfoFromProcess)
+                    if (AudioSessionInstanceIdentifier.FromString(endpointId) is AudioSessionInstanceIdentifier asii)
                     {
-                        displayName = appInfoFromProcess.DisplayName;
-                        iconPath = appInfoFromProcess.LogoPath;
-                    }
-                    else if (AppInfo.FromPath(asii.ExePath) is AppInfo appInfoFromPath)
-                    {
-                        displayName = appInfoFromPath.DisplayName;
-                        iconPath = appInfoFromPath.LogoPath;
+                        (displayName, iconPath) = this.GetUnavailableAppInfo(asii);
                     }
                     audioImageData = new AudioImageData();
                     audioImageData.Id = actionParametersString;
@@ -518,10 +514,68 @@ internal class AudioControlAction
 
     private void Plugin_OnElapsed(object? sender, ElapsedEventArgs e)
     {
-        foreach (string imageId in this.ActionImageStore.ActionImageIds)
+        if (!this._refreshGate.TryEnter())
         {
-            this.RefreshActionImage(imageId);
+            return;
         }
+        try
+        {
+            foreach (string imageId in this.ActionImageStore.ActionImageIds.ToArray())
+            {
+                try
+                {
+                    this.RefreshActionImage(imageId);
+                }
+                catch (Exception ex)
+                {
+                    PluginLog.ThrottledWarning($"AudioControlAction.RefreshActionImage({imageId})", ex);
+                }
+            }
+        }
+        finally
+        {
+            this._refreshGate.Exit();
+        }
+    }
+
+    // Input handlers act on endpoints that can vanish at any moment; keep COM exceptions out of the service.
+    private static bool Guard(string handler, Func<bool> action)
+    {
+        try
+        {
+            return action();
+        }
+        catch (Exception ex)
+        {
+            PluginLog.Warning(ex, $"{handler} failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    // Looking up a closed application's name and icon touches the process list and the file system;
+    // the refresh loop asks for it 20 times per second, so remember the answer for a while.
+    private (string DisplayName, string IconPath) GetUnavailableAppInfo(AudioSessionInstanceIdentifier asii)
+    {
+        string key = $"{asii.ProcessId}|{asii.ExePath}";
+        long now = Environment.TickCount64;
+        if (this._unavailableAppInfo.TryGetValue(key, out var cached) && now - cached.Timestamp < 5000)
+        {
+            return (cached.DisplayName, cached.IconPath);
+        }
+        string displayName = string.Empty;
+        string iconPath = string.Empty;
+        if (AppInfo.FromProcess(asii.ProcessId) is AppInfo appInfoFromProcess)
+        {
+            displayName = appInfoFromProcess.DisplayName;
+            iconPath = appInfoFromProcess.LogoPath;
+        }
+        else if (AppInfo.FromPath(asii.ExePath) is AppInfo appInfoFromPath)
+        {
+            displayName = appInfoFromPath.DisplayName;
+            iconPath = appInfoFromPath.LogoPath;
+        }
+        this._unavailableAppInfo[key] = (displayName, iconPath, now);
+        return (displayName, iconPath);
     }
 
     public bool OnLoad()
@@ -571,7 +625,7 @@ internal class AudioControlAction
         return PluginImage.DrawBlackImage(PluginImage.GetImageSize(imageWidth, imageHeight));
     }
 
-    public bool ProcessButtonEvent2(ActionEditorActionParameters actionParameters, DeviceButtonEvent2 buttonEvent)
+    private bool ProcessButtonEvent2Core(ActionEditorActionParameters actionParameters, DeviceButtonEvent2 buttonEvent)
     {
         if (actionParameters == null || buttonEvent == null)
         {
@@ -625,7 +679,7 @@ internal class AudioControlAction
         return true;
     }
 
-    public bool ProcessTouchEvent(ActionEditorActionParameters actionParameters, DeviceTouchEvent touchEvent)
+    private bool ProcessTouchEventCore(ActionEditorActionParameters actionParameters, DeviceTouchEvent touchEvent)
     {
         if (actionParameters == null || touchEvent == null)
         {
@@ -733,7 +787,7 @@ internal class AudioControlAction
         return true;
     }
 
-    public bool ApplyAdjustment(ActionEditorActionParameters actionParameters, int diff)
+    private bool ApplyAdjustmentCore(ActionEditorActionParameters actionParameters, int diff)
     {
         if (actionParameters == null)
         {
@@ -786,6 +840,15 @@ internal class AudioControlAction
 
         return true;
     }
+
+    public bool ProcessButtonEvent2(ActionEditorActionParameters actionParameters, DeviceButtonEvent2 buttonEvent)
+        => Guard(nameof(ProcessButtonEvent2), () => this.ProcessButtonEvent2Core(actionParameters, buttonEvent));
+
+    public bool ProcessTouchEvent(ActionEditorActionParameters actionParameters, DeviceTouchEvent touchEvent)
+        => Guard(nameof(ProcessTouchEvent), () => this.ProcessTouchEventCore(actionParameters, touchEvent));
+
+    public bool ApplyAdjustment(ActionEditorActionParameters actionParameters, int diff)
+        => Guard(nameof(ApplyAdjustment), () => this.ApplyAdjustmentCore(actionParameters, diff));
 
     public bool ProcessEncoderEvent(ActionEditorActionParameters actionParameters, DeviceEncoderEvent encoderEvent)
     {

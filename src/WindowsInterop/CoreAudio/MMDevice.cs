@@ -18,127 +18,72 @@ public class MMDevice : IAudioControlDevice, IDisposable
     private AudioSessionManager _audioSessionManager = null;
     private DeviceTopology _deviceTopology = null;
     private PropertyStore _propertyStore = null;
+    private readonly object _lazyLock = new object();
+    private int _disposed = 0;
 
-    public AudioClient AudioClient
+    // The plugin reads these from timer, UI and COM notification threads at the same time; unsynchronized
+    // lazy creation could build two instances and leak the registered notifications of one of them.
+    private T GetOrCreate<T>(ref T field, Func<T> create) where T : class
     {
-        get
+        T value = Volatile.Read(ref field);
+        if (value != null || this._disposed != 0)
         {
-            if (this._audioClient == null)
+            return value;
+        }
+        lock (this._lazyLock)
+        {
+            if (field == null && this._disposed == 0)
             {
                 try
                 {
-                    Marshal.ThrowExceptionForHR(this.deviceComObj.Activate(typeof(IAudioClient).GUID, ClsCtx.ALL, IntPtr.Zero, out object audioClient));
-                    this._audioClient = new AudioClient(audioClient as IAudioClient);
+                    field = create();
                 }
                 catch
                 {
-                    this._audioClient = null;
+                    field = null;
                 }
             }
-            return this._audioClient;
+            return field;
         }
     }
 
-    public AudioEndpointVolume AudioEndpointVolume
+    public AudioClient AudioClient => this.GetOrCreate(ref this._audioClient, () =>
     {
-        get
-        {
-            if (this._audioEndpointVolume == null)
-            {
-                try
-                {
-                    Marshal.ThrowExceptionForHR(this.deviceComObj.Activate(typeof(IAudioEndpointVolume).GUID, ClsCtx.ALL, IntPtr.Zero, out object audioEndpointVolume));
-                    this._audioEndpointVolume = new AudioEndpointVolume(this, audioEndpointVolume as IAudioEndpointVolume);
-                }
-                catch
-                {
-                    this._audioEndpointVolume = null;
-                }
-            }
-            return this._audioEndpointVolume;
-        }
-    }
+        Marshal.ThrowExceptionForHR(this.deviceComObj.Activate(typeof(IAudioClient).GUID, ClsCtx.ALL, IntPtr.Zero, out object audioClient));
+        return new AudioClient(audioClient as IAudioClient);
+    });
 
-    public AudioMeterInformation AudioMeterInformation
+    public AudioEndpointVolume AudioEndpointVolume => this.GetOrCreate(ref this._audioEndpointVolume, () =>
     {
-        get
-        {
-            if (this._audioMeterInformation == null)
-            {
-                try
-                {
-                    Marshal.ThrowExceptionForHR(this.deviceComObj.Activate(typeof(IAudioMeterInformation).GUID, ClsCtx.ALL, IntPtr.Zero, out object audioMeterInformation));
-                    this._audioMeterInformation = new AudioMeterInformation(audioMeterInformation as IAudioMeterInformation);
-                }
-                catch
-                {
-                    this._audioMeterInformation = null;
-                }
-            }
-            return this._audioMeterInformation;
-        }
-    }
+        Marshal.ThrowExceptionForHR(this.deviceComObj.Activate(typeof(IAudioEndpointVolume).GUID, ClsCtx.ALL, IntPtr.Zero, out object audioEndpointVolume));
+        return new AudioEndpointVolume(this, audioEndpointVolume as IAudioEndpointVolume);
+    });
 
-    public AudioSessionManager AudioSessionManager
+    public AudioMeterInformation AudioMeterInformation => this.GetOrCreate(ref this._audioMeterInformation, () =>
     {
-        get
-        {
-            if (this._audioSessionManager == null)
-            {
-                try
-                {
-                    Marshal.ThrowExceptionForHR(this.deviceComObj.Activate(typeof(IAudioSessionManager).GUID, ClsCtx.ALL, IntPtr.Zero, out object audioSessionManager));
-                    this._audioSessionManager = new AudioSessionManager(audioSessionManager as IAudioSessionManager);
-                    this._audioSessionManager.SessionLoadError += (s, ex) => this.SessionLoadError?.Invoke(s, ex);
-                }
-                catch
-                {
-                    this._audioSessionManager = null;
-                }
-            }
-            return this._audioSessionManager;
-        }
-    }
+        Marshal.ThrowExceptionForHR(this.deviceComObj.Activate(typeof(IAudioMeterInformation).GUID, ClsCtx.ALL, IntPtr.Zero, out object audioMeterInformation));
+        return new AudioMeterInformation(audioMeterInformation as IAudioMeterInformation);
+    });
 
-    public DeviceTopology DeviceTopology
+    public AudioSessionManager AudioSessionManager => this.GetOrCreate(ref this._audioSessionManager, () =>
     {
-        get
-        {
-            if (this._deviceTopology == null)
-            {
-                try
-                {
-                    Marshal.ThrowExceptionForHR(this.deviceComObj.Activate(typeof(IDeviceTopology).GUID, ClsCtx.ALL, IntPtr.Zero, out object deviceTopology));
-                    this._deviceTopology = new DeviceTopology(deviceTopology as IDeviceTopology);
-                }
-                catch
-                {
-                    this._deviceTopology = null;
-                }
-            }
-            return this._deviceTopology;
-        }
-    }
+        Marshal.ThrowExceptionForHR(this.deviceComObj.Activate(typeof(IAudioSessionManager).GUID, ClsCtx.ALL, IntPtr.Zero, out object audioSessionManager));
+        AudioSessionManager manager = new AudioSessionManager(audioSessionManager as IAudioSessionManager);
+        manager.SessionLoadError += (s, ex) => this.SessionLoadError?.Invoke(s, ex);
+        return manager;
+    });
 
-    public PropertyStore PropertyStore
+    public DeviceTopology DeviceTopology => this.GetOrCreate(ref this._deviceTopology, () =>
     {
-        get
-        {
-            if (this._propertyStore == null)
-            {
-                try
-                {
-                    Marshal.ThrowExceptionForHR(this.deviceComObj.OpenPropertyStore(StorageAccessMode.Read, out IPropertyStore propstore));
-                    this._propertyStore = new PropertyStore(propstore);
-                }
-                catch
-                {
-                    this._propertyStore = null;
-                }
-            }
-            return this._propertyStore;
-        }
-    }
+        Marshal.ThrowExceptionForHR(this.deviceComObj.Activate(typeof(IDeviceTopology).GUID, ClsCtx.ALL, IntPtr.Zero, out object deviceTopology));
+        return new DeviceTopology(deviceTopology as IDeviceTopology);
+    });
+
+    public PropertyStore PropertyStore => this.GetOrCreate(ref this._propertyStore, () =>
+    {
+        Marshal.ThrowExceptionForHR(this.deviceComObj.OpenPropertyStore(StorageAccessMode.Read, out IPropertyStore propstore));
+        return new PropertyStore(propstore);
+    });
 
     public string Id { get; } = null;
     public DataFlow DataFlow { get; }
@@ -258,27 +203,54 @@ public class MMDevice : IAudioControlDevice, IDisposable
         }
     }
 
+    // A device can disappear or refuse activation at any time (unplugged, disabled, exclusive mode);
+    // report neutral values instead of throwing into the refresh loop.
     string IAudioControl.DisplayName { get => this.DeviceDescription; }
-    bool IAudioControl.Muted { get => this.AudioEndpointVolume.Mute; set => this.AudioEndpointVolume.Mute = value; }
-    float IAudioControl.VolumeScalar { get => this.AudioEndpointVolume.MasterVolumeLevelScalar; set => this.AudioEndpointVolume.MasterVolumeLevelScalar = value; }
-    float[] IAudioControl.PeakValues { get => this.AudioMeterInformation.PeakValues.ToArray(); }
-    float IAudioControlDevice.Volume { get => this.AudioEndpointVolume.MasterVolumeLevel; set => this.AudioEndpointVolume.MasterVolumeLevel = value; }
-    float IAudioControlDevice.MinDecibels { get => this.AudioEndpointVolume.VolumeRange.MinDecibels; }
-    float IAudioControlDevice.MaxDecibels { get => this.AudioEndpointVolume.VolumeRange.MaxDecibels; }
-    float IAudioControlDevice.IncrementDecibels { get => this.AudioEndpointVolume.VolumeRange.IncrementDecibels; }
-    IEnumerable<IAudioControlSession> IAudioControlDevice.Sessions { get => this.AudioSessionManager.Sessions; }
+    bool IAudioControl.Muted { get => this.AudioEndpointVolume?.Mute ?? false; set => this.RequireEndpointVolume().Mute = value; }
+    float IAudioControl.VolumeScalar { get => this.AudioEndpointVolume?.MasterVolumeLevelScalar ?? 0.0f; set => this.RequireEndpointVolume().MasterVolumeLevelScalar = value; }
+    float[] IAudioControl.PeakValues { get => this.AudioMeterInformation?.PeakValues.ToArray() ?? Array.Empty<float>(); }
+    float IAudioControlDevice.Volume { get => this.AudioEndpointVolume?.MasterVolumeLevel ?? 0.0f; set => this.RequireEndpointVolume().MasterVolumeLevel = value; }
+    float IAudioControlDevice.MinDecibels { get => this.AudioEndpointVolume?.VolumeRange.MinDecibels ?? 0.0f; }
+    float IAudioControlDevice.MaxDecibels { get => this.AudioEndpointVolume?.VolumeRange.MaxDecibels ?? 0.0f; }
+    float IAudioControlDevice.IncrementDecibels { get => this.AudioEndpointVolume?.VolumeRange.IncrementDecibels ?? 0.0f; }
+    IEnumerable<IAudioControlSession> IAudioControlDevice.Sessions { get => (IEnumerable<IAudioControlSession>)this.AudioSessionManager?.Sessions ?? Array.Empty<IAudioControlSession>(); }
+
+    private AudioEndpointVolume RequireEndpointVolume()
+    {
+        return this.AudioEndpointVolume ?? throw new InvalidOperationException($"Endpoint volume is not available for device '{this.DeviceName}'.");
+    }
 
     public void Dispose()
     {
         GC.SuppressFinalize(this);
-        this.AudioEndpointVolume?.Dispose();
-        this.AudioMeterInformation?.Dispose();
-        this.AudioSessionManager?.Dispose();
-        this.DeviceTopology?.Dispose();
-        this.PropertyStore?.Dispose();
+        if (Interlocked.Exchange(ref this._disposed, 1) == 1)
+        {
+            return;
+        }
+        // Dispose only what was created: the lazy properties would activate new COM objects here.
+        // This also runs on the finalizer thread, where an exception would terminate the host process.
+        lock (this._lazyLock)
+        {
+            TryDispose(this._audioEndpointVolume);
+            TryDispose(this._audioMeterInformation);
+            TryDispose(this._audioSessionManager);
+            TryDispose(this._deviceTopology);
+            TryDispose(this._propertyStore);
+        }
         try
         {
             Marshal.ReleaseComObject(this.deviceComObj);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void TryDispose(IDisposable disposable)
+    {
+        try
+        {
+            disposable?.Dispose();
         }
         catch
         {

@@ -16,36 +16,85 @@ internal class AudioSessionEvents : IAudioSessionEvents
 
     void IAudioSessionEvents.OnDisplayNameChanged(string displayName, ref Guid eventContext)
     {
-        this.DisplayNameChanged?.Invoke(null, (displayName, eventContext));
+        try
+        {
+            this.DisplayNameChanged?.Invoke(null, (displayName, eventContext));
+        }
+        catch (Exception ex)
+        {
+            ComCallback.Report(ex);
+        }
     }
 
     void IAudioSessionEvents.OnIconPathChanged(string iconPath, ref Guid eventContext)
     {
-        this.IconPathChanged?.Invoke(null, (iconPath, eventContext));
+        try
+        {
+            this.IconPathChanged?.Invoke(null, (iconPath, eventContext));
+        }
+        catch (Exception ex)
+        {
+            ComCallback.Report(ex);
+        }
     }
 
     void IAudioSessionEvents.OnSimpleVolumeChanged(float volume, bool isMuted, ref Guid eventContext)
     {
-        this.SimpleVolumeChanged?.Invoke(null, (volume, isMuted, eventContext));
+        try
+        {
+            this.SimpleVolumeChanged?.Invoke(null, (volume, isMuted, eventContext));
+        }
+        catch (Exception ex)
+        {
+            ComCallback.Report(ex);
+        }
     }
 
     void IAudioSessionEvents.OnChannelVolumeChanged(int channelCount, IntPtr newVolumes, int channelIndex, ref Guid eventContext)
     {
-        this.ChannelVolumeChanged?.Invoke(null, (channelCount, newVolumes, channelIndex, eventContext));
+        try
+        {
+            this.ChannelVolumeChanged?.Invoke(null, (channelCount, newVolumes, channelIndex, eventContext));
+        }
+        catch (Exception ex)
+        {
+            ComCallback.Report(ex);
+        }
     }
 
     void IAudioSessionEvents.OnGroupingParamChanged(ref Guid groupingId, ref Guid eventContext)
     {
-        this.GroupingParamChanged?.Invoke(null, (groupingId, eventContext));
+        try
+        {
+            this.GroupingParamChanged?.Invoke(null, (groupingId, eventContext));
+        }
+        catch (Exception ex)
+        {
+            ComCallback.Report(ex);
+        }
     }
 
     void IAudioSessionEvents.OnStateChanged(AudioSessionState state)
     {
-        this.StateChanged?.Invoke(null, state);
+        try
+        {
+            this.StateChanged?.Invoke(null, state);
+        }
+        catch (Exception ex)
+        {
+            ComCallback.Report(ex);
+        }
     }
 
     void IAudioSessionEvents.OnSessionDisconnected(AudioSessionDisconnectReason disconnectReason)
     {
-        this.SessionDisconnected?.Invoke(null, disconnectReason);
+        try
+        {
+            this.SessionDisconnected?.Invoke(null, disconnectReason);
+        }
+        catch (Exception ex)
+        {
+            ComCallback.Report(ex);
+        }
     }
 }

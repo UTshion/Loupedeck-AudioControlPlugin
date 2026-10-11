@@ -10,6 +10,13 @@ internal class AudioEndpointVolumeCallback : IAudioEndpointVolumeCallback
 
     void IAudioEndpointVolumeCallback.OnNotify(IntPtr notifyData)
     {
-        this.Notify?.Invoke(null, notifyData);
+        try
+        {
+            this.Notify?.Invoke(null, notifyData);
+        }
+        catch (Exception ex)
+        {
+            ComCallback.Report(ex);
+        }
     }
 }

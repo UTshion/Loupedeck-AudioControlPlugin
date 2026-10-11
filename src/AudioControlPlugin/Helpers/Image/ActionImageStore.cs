@@ -3,6 +3,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 
 internal class ActionImageStore<T> where T : IActionImageData
 {
@@ -58,14 +59,17 @@ internal class ActionImageStore<T> where T : IActionImageData
         bool exist = this.actionImageData.TryGetValue(id, out T? lastActionData);
         if (!exist || !newActionData.Equals(lastActionData))
         {
-            IActionImageFactory<T> factory = this.actionImageFactories.GetOrAdd(id, this.actionImageFactory.Create());
-            this.actionImageData.AddOrUpdate(id, newActionData, (key, oldValue) => newActionData);
+            // The value factory overload matters: passing Create() directly would build (and leak) a new
+            // factory with its bitmaps, fonts and brushes on every redraw.
+            IActionImageFactory<T> factory = this.actionImageFactories.GetOrAdd(id, _ => this.actionImageFactory.Create());
 
             BitmapImage bitmapWidth60Image = factory.DrawBitmapImage(newActionData, PluginImageSize.Width60);
-            this.actionWidth60Images.AddOrUpdate(id, bitmapWidth60Image, (key, oldValue) => bitmapWidth60Image);
-
             BitmapImage bitmapWidth90Image = factory.DrawBitmapImage(newActionData, PluginImageSize.Width90);
-            this.actionWidth90Images.AddOrUpdate(id, bitmapWidth90Image, (key, oldValue) => bitmapWidth90Image);
+
+            // Store the data last, so that a failed draw is retried on the next refresh.
+            this.actionWidth60Images[id] = bitmapWidth60Image;
+            this.actionWidth90Images[id] = bitmapWidth90Image;
+            this.actionImageData[id] = newActionData;
 
             return true;
         }
@@ -75,5 +79,34 @@ internal class ActionImageStore<T> where T : IActionImageData
     public bool UpdateImage(T newActionData)
     {
         return this.UpdateImage(newActionData.Id, newActionData);
+    }
+
+    // Drops everything not in the given ids (sessions come and go; each id owns a factory with GDI+ resources).
+    public void Retain(IEnumerable<string> ids)
+    {
+        HashSet<string> keep = new HashSet<string>(ids);
+        foreach (string id in this.actionImageFactories.Keys.Concat(this.actionImageData.Keys).Distinct().ToArray())
+        {
+            if (!keep.Contains(id))
+            {
+                this.Remove(id);
+            }
+        }
+    }
+
+    public void Clear()
+    {
+        this.Retain(Array.Empty<string>());
+    }
+
+    public void Remove(string id)
+    {
+        this.actionImageData.TryRemove(id, out _);
+        this.actionWidth60Images.TryRemove(id, out _);
+        this.actionWidth90Images.TryRemove(id, out _);
+        if (this.actionImageFactories.TryRemove(id, out IActionImageFactory<T>? factory))
+        {
+            factory.Dispose();
+        }
     }
 }
