@@ -15,7 +15,6 @@ internal static class AudioControl
     {
         ComCallback.UnhandledException += (sender, ex) =>
         {
-            Diag.Error("Core Audio notification", ex);
             PluginLog.Error(ex, $"[CoreAudio] Notification handling failed: {ex.Message}");
         };
         MMAudio mmAudio = new MMAudio();

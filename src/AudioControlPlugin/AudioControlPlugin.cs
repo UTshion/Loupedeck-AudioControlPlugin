@@ -44,13 +44,11 @@ public class AudioControlPlugin : Plugin
 
         AudioControlPlugin.RefreshTimer.Interval = 1000.0 / PluginSettings.FPS;
         AudioControlPlugin.RefreshTimer.Enabled = true;
-        Diag.Log($"=== Plugin.Load (diag build) interval={AudioControlPlugin.RefreshTimer.Interval}ms");
     }
 
     // This method is called when the plugin is unloaded.
     public override void Unload()
     {
-        Diag.Log("=== Plugin.Unload");
         AudioControlPlugin.RefreshTimer.Enabled = false;
     }
 }

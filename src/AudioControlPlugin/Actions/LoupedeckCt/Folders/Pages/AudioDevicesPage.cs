@@ -38,7 +38,7 @@ internal class AudioDevicesPage : FolderPage
                 }
                 catch (Exception ex)
                 {
-                    Diag.Error($"AudioDevicesPage.RefreshActionImage({actionName})", ex);
+                    PluginLog.ThrottledWarning($"AudioDevicesPage.RefreshActionImage({actionName})", ex);
                 }
             }
             this._actionImageStore.Retain(names);

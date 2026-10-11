@@ -58,7 +58,6 @@ internal class AudioSessionsPage : FolderPage
         try
         {
             List<string> names = base.ButtonActionNames;
-            Diag.Throttled($"tick-{this.GetHashCode()}", $"tick page#{this.GetHashCode()} names={names.Count} selected='{this._selectedActionName}'", 5000);
             foreach (string actionName in names)
             {
                 // One failing session (e.g. its process just exited) must not stop the others from refreshing.
@@ -68,14 +67,14 @@ internal class AudioSessionsPage : FolderPage
                 }
                 catch (Exception ex)
                 {
-                    Diag.Error($"AudioSessionsPage.RefreshActionImage({actionName})", ex);
+                    PluginLog.ThrottledWarning($"AudioSessionsPage.RefreshActionImage({actionName})", ex);
                 }
             }
             this._actionImageStore.Retain(names);
         }
         catch (Exception ex)
         {
-            Diag.Error("AudioSessionsPage.Plugin_OnElapsed", ex);
+            PluginLog.ThrottledWarning("AudioSessionsPage.Plugin_OnElapsed", ex);
         }
         finally
         {
@@ -110,7 +109,6 @@ internal class AudioSessionsPage : FolderPage
 
     public override void Enter()
     {
-        Diag.Log($"AudioSessionsPage.Enter page#{this.GetHashCode()} timerEnabled={AudioControlPlugin.RefreshTimer.Enabled}");
         AudioControlPlugin.RefreshTimer.Elapsed += this.Plugin_OnElapsed;
         AudioControl.MMAudio.SessionStateChanged += this.MMAudio_OnSessionStateChanged;
         AudioControl.MMAudio.DeviceStateChanged += this.MMAudio_OnDeviceStateChanged;
@@ -121,7 +119,6 @@ internal class AudioSessionsPage : FolderPage
 
     public override void Leave()
     {
-        Diag.Log($"AudioSessionsPage.Leave page#{this.GetHashCode()}");
         AudioControlPlugin.RefreshTimer.Elapsed -= this.Plugin_OnElapsed;
         AudioControl.MMAudio.SessionStateChanged -= this.MMAudio_OnSessionStateChanged;
         AudioControl.MMAudio.DeviceStateChanged -= this.MMAudio_OnDeviceStateChanged;
@@ -166,9 +163,8 @@ internal class AudioSessionsPage : FolderPage
         }
         catch (Exception ex)
         {
-            Diag.Error($"AudioSessionsPage.GetImage({actionParameter})", ex);
+            PluginLog.ThrottledWarning($"AudioSessionsPage.GetImage({actionParameter})", ex);
         }
-        Diag.Throttled("page-black", $"BLACK AudioSessionsPage.GetImage: no stored image for {actionParameter}");
         return PluginImage.DrawBlackImage(imageSize);
     }
 
@@ -255,15 +251,11 @@ internal class AudioSessionsPage : FolderPage
                 {
                     AudioControl.SetRelativeVolume(audioControl, encoderEvent.Clicks);
                 }
-                else
-                {
-                    Diag.Throttled("encoder-miss", $"encoder: selected '{this._selectedActionName}' not found");
-                }
             }
         }
         catch (Exception ex)
         {
-            Diag.Error("AudioSessionsPage.ProcessEncoderEvent", ex);
+            PluginLog.ThrottledWarning("AudioSessionsPage.ProcessEncoderEvent", ex);
         }
         return false;
     }
@@ -285,7 +277,6 @@ internal class AudioSessionsPage : FolderPage
 
     public override bool ProcessTouchEvent(string actionParameter, DeviceTouchEvent touchEvent)
     {
-        Diag.Throttled($"touch-{touchEvent.EventType}", $"touch {touchEvent.EventType} on {actionParameter}", 300);
         if (AudioControl.TryGetAudioControl(actionParameter, null, out IAudioControl? audioControl))
         {
             if (touchEvent.EventType == DeviceTouchEventType.Tap)

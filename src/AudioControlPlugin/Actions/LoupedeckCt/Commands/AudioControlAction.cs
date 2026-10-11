@@ -528,7 +528,7 @@ internal class AudioControlAction
                 }
                 catch (Exception ex)
                 {
-                    Diag.Error($"AudioControlAction.RefreshActionImage({imageId})", ex);
+                    PluginLog.ThrottledWarning($"AudioControlAction.RefreshActionImage({imageId})", ex);
                 }
             }
         }
@@ -547,7 +547,6 @@ internal class AudioControlAction
         }
         catch (Exception ex)
         {
-            Diag.Error($"AudioControlAction.{handler}", ex);
             PluginLog.Warning(ex, $"{handler} failed: {ex.Message}");
             return false;
         }

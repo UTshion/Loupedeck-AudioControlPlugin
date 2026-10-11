@@ -82,7 +82,6 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         List<Action> after = new List<Action>();
         if (!Monitor.TryEnter(this._navigationLock, TimeSpan.FromSeconds(5)))
         {
-            Diag.Log($"{operation}: skipped, another navigation is still running");
             PluginLog.Warning($"Folder navigation '{operation}' skipped: another navigation is still running");
             return;
         }
@@ -92,7 +91,6 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         }
         catch (Exception ex)
         {
-            Diag.Error($"Folder.{operation}", ex);
             PluginLog.Error(ex, $"Folder navigation '{operation}' failed: {ex.Message}");
         }
         finally
@@ -107,7 +105,7 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
             }
             catch (Exception ex)
             {
-                Diag.Error($"Folder.{operation} (notify)", ex);
+                PluginLog.ThrottledWarning($"Folder.{operation} (notify)", ex);
             }
         }
     }
@@ -141,7 +139,6 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
     {
         this.Navigate(nameof(NavigateTo), after =>
         {
-            Diag.Log($"NavigateTo {nextPage?.Name} from {this.CurrentPage?.Name} depth={this.PageDepth}");
             if (nextPage == null || this.CurrentPage == null)
             {
                 return;
@@ -161,7 +158,6 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
     {
         this.Navigate(nameof(LeavePage), after =>
         {
-            Diag.Log($"LeavePage {this.CurrentPage?.Name} depth={this.PageDepth}");
             FolderPage? page;
             lock (this._stackLock)
             {
@@ -201,7 +197,6 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         bool closing = this._closing && now - Interlocked.Read(ref this._closingTimestamp) < 3000;
         if (closing || now - Interlocked.Read(ref this._lastBackTimestamp) < BACK_DEBOUNCE_MS)
         {
-            Diag.Log("Back ignored (duplicate of the same tap)");
             return;
         }
         Interlocked.Exchange(ref this._lastBackTimestamp, now);
@@ -248,7 +243,6 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
                     this._pageStack.Add(this._homePage);
                 }
             }
-            Diag.Log($"Folder.Activate {this.GetType().Name} page={this.CurrentPage?.Name} depth={this.PageDepth}");
             this.CurrentPage?.Load();
             this.EnterCurrentPage();
             // Names may have changed while the page was not listening.
@@ -261,7 +255,6 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
     {
         this.Navigate(nameof(Deactivate), after =>
         {
-            Diag.Log($"Folder.Deactivate {this.GetType().Name} page={this.CurrentPage?.Name} depth={this.PageDepth}");
             this.LeaveEnteredPage();
             List<FolderPage> pages;
             lock (this._stackLock)
@@ -302,7 +295,6 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
                 this.ButtonActionNames.Add($"{page.Name}+@back");
                 this.ButtonActionNames.AddRange(page.GetButtonPressActionNames(deviceType).Select(s => $"{page.Name}+{s}"));
             }
-            Diag.Log($"GetButtonPressActionNames page={page?.Name} count={this.ButtonActionNames.Count}");
             // Materialize while locked: a lazy query would be enumerated by the service after the lock
             // is released, while another thread may already be refilling the list.
             return this.ButtonActionNames.Select(s => base.CreateCommandName(s)).ToArray();
@@ -354,12 +346,11 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
                 }
                 catch (Exception ex)
                 {
-                    Diag.Error($"{page.Name}.GetCommandImage({pageActionParameter})", ex);
+                    PluginLog.ThrottledWarning($"{page.Name}.GetCommandImage({pageActionParameter})", ex);
                     return PluginImage.DrawBlackImage(imageSize);
                 }
             }
         }
-        Diag.Throttled("folder-black", $"BLACK Folder.GetCommandImage: requested page={pageName} current={this.CurrentPage?.Name} depth={this.PageDepth}");
         return PluginImage.DrawBlackImage(imageSize);
     }
 
@@ -392,7 +383,6 @@ internal abstract class Folder : PluginDynamicFolder, IPluginDynamicFolder
         }
         catch (Exception ex)
         {
-            Diag.Error($"Folder.{handler}", ex);
             PluginLog.Warning(ex, $"{handler} failed: {ex.Message}");
             return false;
         }
